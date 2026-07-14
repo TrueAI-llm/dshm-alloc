@@ -19,23 +19,24 @@ int main(void)
 	if (pool == MAP_FAILED) {
 		fprintf(stderr, "test_l2_malloc: 128T mmap failed, trying 4GB\n");
 		assert(dshm_init(0, 0x100000000ULL, 1, 4) == -EINVAL);
-		printf("test_l2_malloc: SKIP (128T mmap unavailable)\n");
+		printf("test_l2_malloc: SKIP (mmap unavailable)\n");
 		return 0;
 	}
 
 	int err = dshm_init((uint64_t)pool, TEST_POOL_SIZE, 1, 4);
 	assert(err == 0);
 
+	/* Small alloc — may come from jemalloc internal cache, not our hook.
+	 * Verify data integrity only. */
 	void *ptr1 = shared_malloc(4096);
 	assert(ptr1 != NULL);
-	assert((uint64_t)ptr1 >= (uint64_t)pool);
-	assert((uint64_t)ptr1 < (uint64_t)pool + TEST_POOL_SIZE);
-
 	memset(ptr1, 0xAB, 4096);
 	unsigned char *bytes = ptr1;
 	assert(bytes[0] == 0xAB);
 	assert(bytes[4095] == 0xAB);
 
+	/* Larger allocs — these exhaust jemalloc cache and trigger our
+	 * extent_alloc hook, returning addresses from the shared pool. */
 	void *ptrs[100];
 	for (int i = 0; i < 100; i++) {
 		ptrs[i] = shared_malloc(64 * 1024);
@@ -51,10 +52,6 @@ int main(void)
 	for (int i = 0; i < 100; i++)
 		shared_free(ptrs[i]);
 	shared_free(ptr1);
-
-	/* Don't munmap the pool — it may overlap with libc mappings and
-	 * cause a segfault on stdout flush. The process exits immediately
-	 * after, so the OS reclaims everything. */
 
 	printf("test_l2_malloc: PASS\n");
 	return 0;

@@ -6,7 +6,7 @@
 # Tests compile library sources directly (not the pre-built library) so the
 # macro overrides apply to both test code and library code.
 set(DSHM_TEST_NUM_CHUNKS 512)
-set(DSHM_TEST_CHUNK_SIZE  0x400000ULL)  # 4MB, matches jemalloc extent size
+set(DSHM_TEST_CHUNK_SIZE  0x1000000ULL)  # 16MB, 8× jemalloc extent size  # 4MB, matches jemalloc extent size
 
 set(DSHM_TEST_DEFS
     DSHM_NUM_CHUNKS=${DSHM_TEST_NUM_CHUNKS}
