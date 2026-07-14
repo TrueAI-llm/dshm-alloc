@@ -15,4 +15,6 @@ add_library(dshm_malloc STATIC
 )
 target_include_directories(dshm_malloc PUBLIC include src)
 
-# Tests — add_subdirectory deferred to Task 2 (when tests/CMakeLists.txt is created)
+# Tests
+enable_testing()
+add_subdirectory(tests)
