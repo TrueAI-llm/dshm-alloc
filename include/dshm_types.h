@@ -3,9 +3,15 @@
 
 #include <stdint.h>
 
+#ifndef DSHM_NUM_CHUNKS
 #define DSHM_NUM_CHUNKS    131072       /* 128T / 1G */
+#endif
+#ifndef DSHM_MAX_NODES
 #define DSHM_MAX_NODES    256
+#endif
+#ifndef DSHM_CHUNK_SIZE
 #define DSHM_CHUNK_SIZE    0x40000000ULL  /* 1G = 1 << 30 */
+#endif
 #define DSHM_MAGIC         0x4453484d4d43424cULL  /* "DSHMMCBL" */
 #define DSHM_INITIALIZING  0x494e4954494e4954ULL  /* "INITINIT" */
 #define DSHM_DEFAULT_CACHE_SIZE  4
