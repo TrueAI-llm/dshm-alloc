@@ -86,8 +86,91 @@ void L1_free(__u32 chunk_id)
 }
 
 /* Placeholder slow path — replaced in Task 3. */
+#define DSHM_SLOWPATH_MAX_CONSEC_FAIL 8
+
 static struct dshm_chunk_alloc_result L1_slow_path(void)
 {
-	struct dshm_chunk_alloc_result r = { .err = -ENOMEM, .chunk_id = 0 };
-	return r;
+	struct dshm_superblock *sb =
+		(struct dshm_superblock *)(void *)g_state->pool_base_va;
+
+	struct dshm_chunk_alloc_result result = { .err = -ENOMEM, .chunk_id = 0 };
+
+	unsigned int seed = (unsigned int)dshm_clock_ns();
+	__u32 start = (__u32)(rand_r(&seed) % DSHM_NUM_CHUNKS);
+
+	struct dshm_chunk_entry new_entry = {
+		.owner_node = g_state->my_node_id,
+		.owner_pid  = g_state->my_pid,
+	};
+
+	__u32 allocated_id = 0;
+	int found = 0;
+
+	for (__u32 i = 0; i < DSHM_NUM_CHUNKS; i++) {
+		__u32 idx = (start + i) % DSHM_NUM_CHUNKS;
+		volatile struct dshm_chunk_entry *e = &sb->entries[idx];
+
+		__u32 on = __atomic_load_n(
+			(volatile uint32_t *)&e->owner_node,
+			__ATOMIC_RELAXED);
+		if (on != 0)
+			continue;
+
+		struct dshm_chunk_entry old_entry = {
+			.owner_node = 0, .owner_pid = 0 };
+		if (dshm_cas_entry(e, old_entry, new_entry)) {
+			sb->alloc_timestamps[idx] = dshm_clock_ns();
+			allocated_id = idx;
+			found = 1;
+			break;
+		}
+	}
+
+	if (!found)
+		return result;
+
+	int consec_fail = 0;
+	for (;;) {
+		pthread_spin_lock(&g_state->cache.lock);
+		if (g_state->cache.cnt >= g_state->cache.max) {
+			pthread_spin_unlock(&g_state->cache.lock);
+			break;
+		}
+		pthread_spin_unlock(&g_state->cache.lock);
+
+		__u32 scan_start = (allocated_id + 1) % DSHM_NUM_CHUNKS;
+		int refill_found = 0;
+
+		for (__u32 j = 0; j < DSHM_NUM_CHUNKS; j++) {
+			__u32 idx = (scan_start + j) % DSHM_NUM_CHUNKS;
+			volatile struct dshm_chunk_entry *e = &sb->entries[idx];
+			__u32 on = __atomic_load_n(
+				(volatile uint32_t *)&e->owner_node,
+				__ATOMIC_RELAXED);
+			if (on != 0)
+				continue;
+
+			struct dshm_chunk_entry old_e = {
+				.owner_node = 0, .owner_pid = 0 };
+			if (dshm_cas_entry(e, old_e, new_entry)) {
+				sb->alloc_timestamps[idx] = dshm_clock_ns();
+				pthread_spin_lock(&g_state->cache.lock);
+				g_state->cache.chunk_ids[g_state->cache.cnt++] = idx;
+				pthread_spin_unlock(&g_state->cache.lock);
+				refill_found = 1;
+				consec_fail = 0;
+				break;
+			}
+		}
+
+		if (!refill_found) {
+			consec_fail++;
+			if (consec_fail >= DSHM_SLOWPATH_MAX_CONSEC_FAIL)
+				break;
+		}
+	}
+
+	result.err = 0;
+	result.chunk_id = allocated_id;
+	return result;
 }
