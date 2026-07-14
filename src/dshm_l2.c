@@ -50,11 +50,21 @@ static void feeder_cleanup(void)
  * Caller (jemalloc) must hold no dshm locks. */
 static void *feeder_alloc(size_t size, size_t alignment)
 {
+	if (size > DSHM_CHUNK_SIZE) {
+		__u32 n = (__u32)((size + DSHM_CHUNK_SIZE - 1) / DSHM_CHUNK_SIZE);
+		struct dshm_chunk_alloc_result r = L1_alloc_contiguous(n);
+		if (r.err)
+			return NULL;
+		__u64 va = g_state->pool_base_va +
+			   (uint64_t)r.chunk_id * DSHM_CHUNK_SIZE;
+		atomic_fetch_add_explicit(&feeder.used_bytes[r.chunk_id],
+					  size, memory_order_relaxed);
+		return (void *)(uintptr_t)va;
+	}
+
 	pthread_spin_lock(&feeder.lock);
 
-	/* Check if current active chunk has enough room. */
 	if (feeder.active_offset + size > DSHM_CHUNK_SIZE) {
-		/* Need a new chunk. */
 		struct dshm_chunk_alloc_result r = L1_alloc();
 		if (r.err) {
 			pthread_spin_unlock(&feeder.lock);
@@ -64,7 +74,6 @@ static void *feeder_alloc(size_t size, size_t alignment)
 		feeder.active_offset = 0;
 	}
 
-	/* Align active_offset up to alignment. */
 	__u64 misalign = feeder.active_offset % alignment;
 	if (misalign)
 		feeder.active_offset += alignment - misalign;
@@ -73,7 +82,6 @@ static void *feeder_alloc(size_t size, size_t alignment)
 	__u64 offset = feeder.active_offset;
 	feeder.active_offset += size;
 
-	/* Track used bytes on this chunk. */
 	atomic_fetch_add_explicit(&feeder.used_bytes[chunk_id], size,
 				  memory_order_relaxed);
 
@@ -95,16 +103,20 @@ static void feeder_free(void *addr, size_t size)
 		&feeder.used_bytes[chunk_id], size, memory_order_relaxed);
 
 	if (prev == size) {
-		/* This chunk is now fully free. Return to L1. */
-		/* If it's the active chunk, advance past it so we
-		 * don't carve from it again. */
-		pthread_spin_lock(&feeder.lock);
-		if (feeder.active_chunk_id == chunk_id) {
-			feeder.active_offset = DSHM_CHUNK_SIZE;
-			feeder.active_chunk_id = 0xFFFFFFFF;
+		if (size > DSHM_CHUNK_SIZE) {
+			__u32 n = (__u32)((size + DSHM_CHUNK_SIZE - 1)
+					   / DSHM_CHUNK_SIZE);
+			for (__u32 i = 0; i < n; i++)
+				L1_free(chunk_id + i);
+		} else {
+			pthread_spin_lock(&feeder.lock);
+			if (feeder.active_chunk_id == chunk_id) {
+				feeder.active_offset = DSHM_CHUNK_SIZE;
+				feeder.active_chunk_id = 0xFFFFFFFF;
+			}
+			pthread_spin_unlock(&feeder.lock);
+			L1_free(chunk_id);
 		}
-		pthread_spin_unlock(&feeder.lock);
-		L1_free(chunk_id);
 	}
 }
 

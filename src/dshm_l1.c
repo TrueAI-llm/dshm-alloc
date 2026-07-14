@@ -45,8 +45,71 @@ void L1_cleanup_state(void)
 	g_state = NULL;
 }
 
-/* Forward declaration for slow path (implemented in Task 3). */
 static struct dshm_chunk_alloc_result L1_slow_path(void);
+
+/* Allocate n consecutive chunks. Scans for n contiguous FREE entries,
+ * CASes them one by one. Rolls back on any CAS failure. */
+struct dshm_chunk_alloc_result L1_alloc_contiguous(__u32 n)
+{
+	struct dshm_chunk_alloc_result result = { .err = -ENOMEM, .chunk_id = 0 };
+
+	if (n == 0)
+		return result;
+	if (n == 1)
+		return L1_alloc();
+
+	struct dshm_superblock *sb =
+		(struct dshm_superblock *)(void *)g_state->pool_base_va;
+
+	unsigned int seed = (unsigned int)dshm_clock_ns();
+	__u32 start = (__u32)(rand_r(&seed) % DSHM_NUM_CHUNKS);
+
+	struct dshm_chunk_entry new_entry = {
+		.owner_node = g_state->my_node_id,
+		.owner_pid  = g_state->my_pid,
+	};
+	struct dshm_chunk_entry free_entry = {
+		.owner_node = 0, .owner_pid = 0,
+	};
+
+	for (__u32 attempt = 0; attempt < DSHM_NUM_CHUNKS; attempt++) {
+		__u32 base = (start + attempt) % DSHM_NUM_CHUNKS;
+
+		if (base + n > DSHM_NUM_CHUNKS)
+			continue;
+
+		__u32 acquired = 0;
+		for (__u32 j = 0; j < n; j++) {
+			__u32 idx = base + j;
+			volatile struct dshm_chunk_entry *e = &sb->entries[idx];
+
+			__u32 on = __atomic_load_n(
+				(volatile uint32_t *)&e->owner_node,
+				__ATOMIC_RELAXED);
+			if (on != 0)
+				goto rollback;
+
+			struct dshm_chunk_entry old_entry = {
+				.owner_node = 0, .owner_pid = 0 };
+			if (!dshm_cas_entry(e, old_entry, new_entry))
+				goto rollback;
+
+			sb->alloc_timestamps[idx] = dshm_clock_ns();
+			acquired++;
+		}
+
+		result.err = 0;
+		result.chunk_id = base;
+		return result;
+
+	rollback:
+		for (__u32 j = 0; j < acquired; j++) {
+			dshm_store_entry(&sb->entries[base + j], free_entry);
+		}
+	}
+
+	return result;
+}
 
 struct dshm_chunk_alloc_result L1_alloc(void)
 {

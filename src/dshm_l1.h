@@ -25,6 +25,7 @@ extern struct dshm_proc_state *g_state;
 
 /* L1 API */
 struct dshm_chunk_alloc_result L1_alloc(void);
+struct dshm_chunk_alloc_result L1_alloc_contiguous(__u32 n);
 void L1_free(__u32 chunk_id);
 
 /* Internal: init per-process state (called by dshm_init). */
