@@ -18,4 +18,7 @@ add_executable(test_l1_concurrent test_l1_concurrent.c)
 target_link_libraries(test_l1_concurrent dshm_malloc pthread)
 add_test(NAME l1_concurrent COMMAND test_l1_concurrent)
 # Task 6 will append test_l2_init here.
+add_executable(test_l2_init test_l2_init.c)
+target_link_libraries(test_l2_init dshm_malloc pthread)
+add_test(NAME l2_init COMMAND test_l2_init)
 # Task 7 will append test_l2_malloc here.
