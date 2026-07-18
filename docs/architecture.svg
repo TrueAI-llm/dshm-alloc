@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 720" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title>dshm-alloc overall architecture</title>
+  <desc>Two-layer (L1/L2) distributed chunk allocator over a 128TB shared GVA pool.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .box      { fill:#ffffff; stroke:#475569; stroke-width:1.5; }
+      .title    { font-size:14px; font-weight:600; fill:#0f172a; }
+      .subtitle { font-size:11px; fill:#475569; }
+      .note     { font-size:10px; fill:#64748b; }
+      .arrow    { stroke:#475569; stroke-width:1.4; fill:none; }
+      .layerhdr { font-size:12px; font-weight:700; fill:#1e293b; }
+      .lane     { fill:#f1f5f9; stroke:#cbd5e1; stroke-width:1; stroke-dasharray:4 3; }
+    </style>
+  </defs>
+
+  <!-- ===== User Process outer frame ===== -->
+  <rect x="20" y="20" width="840" height="560" rx="10" class="box"/>
+  <text x="40" y="44" class="layerhdr">User Process</text>
+
+  <!-- Application layer -->
+  <rect x="40" y="60" width="800" height="56" rx="6" class="box" fill="#eff6ff" stroke="#60a5fa"/>
+  <text x="60" y="84" class="title">Application Code</text>
+  <text x="60" y="102" class="note">shared_malloc(size)  ⇄  shared_free(ptr)     — routes to dshm arena, isolated from local malloc</text>
+
+  <!-- arrow down -->
+  <line x1="440" y1="116" x2="440" y2="140" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- ===== libdshm_malloc frame ===== -->
+  <rect x="40" y="140" width="800" height="430" rx="8" class="box" fill="#f8fafc"/>
+  <text x="60" y="162" class="layerhdr">libdshm_malloc  (static library)</text>
+
+  <!-- L2 block -->
+  <rect x="60" y="178" width="760" height="140" rx="6" class="box" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="80" y="200" class="title">L2 · jemalloc extent_hooks adapter + chunk feeder</text>
+  <text x="80" y="220" class="note">extent_alloc  → feeder_alloc → L1_alloc          extent_dalloc → feeder_free → L1_free</text>
+  <text x="80" y="238" class="note">commit / decommit / purge_lazy / purge_forced / split / merge  →  delegated to jemalloc defaults</text>
+  <text x="80" y="258" class="note">sub-allocates ~2MB extents from a 1GB chunk; used_bytes[] refcount tracks when a chunk can return to L1</text>
+  <text x="80" y="282" class="note">extent metadata (edata_t + rtree) stays in jemalloc process-local heap — nothing written into the shared chunk</text>
+
+  <line x1="440" y1="318" x2="440" y2="348" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- L1 block -->
+  <rect x="60" y="348" width="760" height="210" rx="6" class="box" fill="#ecfdf5" stroke="#10b981"/>
+  <text x="80" y="370" class="title">L1 · distributed 1GB chunk allocator  (per-process singleton)</text>
+
+  <!-- fast path -->
+  <rect x="90" y="386" width="340" height="78" rx="6" class="box"/>
+  <text x="110" y="408" class="subtitle">fast path · per-process local cache</text>
+  <text x="110" y="426" class="note">pthread_spinlock · default 4 × 1GB · LIFO pop</text>
+  <text x="110" y="442" class="note">cache.cnt &gt; 0  →  pop chunk_id, return VA</text>
+
+  <!-- slow path -->
+  <rect x="450" y="386" width="350" height="78" rx="6" class="box"/>
+  <text x="470" y="408" class="subtitle">slow path · global CAS bitmap</text>
+  <text x="470" y="426" class="note">random-start linear scan of 131072 entries</text>
+  <text x="470" y="442" class="note">CAS {0,0}→{node,pid}  ·  refills cache on entry</text>
+
+  <!-- miss arrow between fast and slow -->
+  <line x1="430" y1="425" x2="450" y2="425" class="arrow" marker-end="url(#arrow)"/>
+  <text x="432" y="418" class="note">miss</text>
+
+  <text x="80" y="492" class="note">L1_alloc_contiguous(n): N consecutive chunks via CAS + rollback on conflict (for size &gt; 1GB)</text>
+  <text x="80" y="510" class="note">L1_free: prefer returning to local cache; on full, plain RELEASE store {0,0} to bitmap (sole-owner, no CAS needed)</text>
+  <text x="80" y="528" class="note">no daemon · no cross-process lock · no kernel device · coordination is only CAS on the shared bitmap</text>
+
+  <!-- ===== Shared pool ===== -->
+  <rect x="20" y="600" width="840" height="100" rx="10" class="box" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="40" y="624" class="layerhdr">Shared GVA Pool · 128TB</text>
+  <rect x="40" y="638" width="300" height="50" rx="4" class="box"/>
+  <text x="56" y="660" class="subtitle">chunk 0: metadata</text>
+  <text x="56" y="676" class="note">superblock (256B hdr + 1MB entries + 1MB timestamps)</text>
+  <rect x="360" y="638" width="480" height="50" rx="4" class="box"/>
+  <text x="376" y="660" class="subtitle">chunk 1 .. 131071: allocatable 1GB chunks</text>
+  <text x="376" y="676" class="note">owner_node == 0 means FREE</text>
+
+  <!-- link L1 down to pool -->
+  <line x1="440" y1="570" x2="440" y2="598" class="arrow" marker-end="url(#arrow)"/>
+  <text x="448" y="590" class="note">CAS on entries[]</text>
+</svg>
